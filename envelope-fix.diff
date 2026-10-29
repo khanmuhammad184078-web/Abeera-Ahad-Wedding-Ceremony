@@ -1,0 +1,128 @@
+diff -ru project-backup-20261029/README.md project/README.md
+--- project-backup-20261029/README.md	2026-10-29 10:25:07.154676432 +0000
++++ project/README.md	2026-10-29 10:36:09.858068052 +0000
+@@ -14,6 +14,8 @@
+ 
+ ## What the animation does
+ - Floating envelope with a 3D flap flip, card rising out, gold sparkle burst, and a zoom-through into the invitation.
++  The envelope only starts to exit after the flap and card have really finished moving, then holds a moment so the guest sees the card.
++  `reveal.holdMs` (default 500) sets that pause. `reveal.durationMs` is now only a safety net (minimum 3000 ms) and cannot cut the animation short.
+ - Names appear letter by letter; corner flourishes and dividers draw themselves; the date and subtitle follow in sequence.
+ - Gold sparkles and soft petals drift across the page; a sparkle trail follows the mouse on computers.
+ - Flip-style countdown digits, a timeline whose line grows as you scroll, a gallery in an arch frame with slow zoom and auto-advance, a signature that writes itself, and a petal celebration at the end.
+diff -ru project-backup-20261029/config.js project/config.js
+--- project-backup-20261029/config.js	2026-10-29 10:25:07.154665352 +0000
++++ project/config.js	2026-10-29 10:29:48.660816969 +0000
+@@ -3,7 +3,7 @@
+   meta: { title: "Amelia & James | Wedding Invitation", description: "Join us on 12 June 2027", language: "en", googleFonts: true },
+   // preset: "ivory-champagne" (default) | "blush-rose" | "midnight-luxury" | "floral-garden"
+   theme: { preset: "ivory-champagne", overrides: {} },          // overrides e.g. { "--accent": "#8a1f3d" }
+-  reveal: { monogram: "A&J", hint: "Tap the seal to open", durationMs: 2200 },
++  reveal: { monogram: "A&J", hint: "Tap the seal to open", durationMs: 2200, holdMs: 500 },  // durationMs = safety net only; holdMs = pause after the card is out, before the envelope exits
+   hero: { eyebrow: "Together with their families", names: "Amelia & James", dateText: "Saturday, 12 June 2027", subtitle: "request the pleasure of your company" },
+   blessing: { enabled: true, text: "With joy in our hearts, we invite you to celebrate the beginning of our life together." },
+   countdown: { enabled: true, title: "Counting the Days", targetISO: "2027-06-12T17:00:00+05:00", doneText: "Today is the day!", labels: { d: "Days", h: "Hours", m: "Minutes", s: "Seconds" } },
+diff -ru project-backup-20261029/script.js project/script.js
+--- project-backup-20261029/script.js	2026-10-29 10:25:07.154641074 +0000
++++ project/script.js	2026-10-29 10:29:48.660555680 +0000
+@@ -324,17 +324,44 @@
+   window.addEventListener('scroll', onScroll, { passive: true });
+   onScroll();
+ 
+-  /* reveal state machine: sealed -> opening -> open */
+-  var cover = document.getElementById('cover'), trigger = cover.querySelector('[data-reveal-trigger]'), state = 'sealed', safety, entered = false;
++  /* reveal state machine: sealed -> opening -> revealing -> open
++     opening   = seal fades, flap rotates back, card slides out (CSS; ordered by its own delays)
++     revealing = starts ONLY after both the flap and the card report their transform transition finished,
++                 plus a short hold so the card can be seen; then the cover zooms/fades and the hero begins
++     open      = cover removed from interaction, page content un-inerted, scrolling restored
++     Fallback timers only run the NEXT stage if an event is missed; they never cut a stage short. */
++  var cover = document.getElementById('cover'), trigger = cover.querySelector('[data-reveal-trigger]'), state = 'sealed', entered = false;
++  var cardEl = cover.querySelector('.card'), flapEl = cover.querySelector('.flap');
++  var doneFlap = false, doneCard = false, holdTimer = 0, fallbackOpen = 0, fallbackExit = 0;
++  var HOLD = typeof C.reveal.holdMs === 'number' ? Math.max(0, C.reveal.holdMs) : 500;
++  app.setAttribute('inert', '');   /* nothing behind the envelope can take keyboard focus */
+   function enter() {
+     if (entered) return; entered = true;
+     document.body.classList.add('entered'); hero.classList.add('is-in'); FX.enter();
+   }
+   function finish() {
+-    if (state === 'open') return; state = 'open'; clearTimeout(safety);
++    if (state === 'open') return; state = 'open';
++    clearTimeout(holdTimer); clearTimeout(fallbackOpen); clearTimeout(fallbackExit);
++    cover.removeEventListener('transitionend', onEnd);
+     cover.dataset.state = 'open'; cover.setAttribute('inert', ''); cover.hidden = true;
++    app.removeAttribute('inert');
+     document.body.classList.remove('locked'); enter(); scrollReveals(); h1.focus({ preventScroll: true });
+   }
++  function beginReveal() {
++    if (state !== 'opening') return; state = 'revealing';
++    clearTimeout(holdTimer); clearTimeout(fallbackOpen);
++    cover.dataset.state = 'revealing';
++    enter();
++    fallbackExit = setTimeout(finish, 1800);   /* the cover fade is .9s; this only covers a missed transitionend */
++  }
++  function onEnd(e) {
++    if (state === 'opening') {
++      if (e.propertyName !== 'transform') return;
++      if (e.target === flapEl) doneFlap = true;
++      if (e.target === cardEl) doneCard = true;
++      if (doneFlap && doneCard && !holdTimer) { clearTimeout(fallbackOpen); holdTimer = setTimeout(beginReveal, HOLD); }
++    } else if (state === 'revealing' && e.target === cover && e.propertyName === 'opacity') finish();
++  }
+   function open() {
+     if (state !== 'sealed') return;
+     state = 'opening'; cover.dataset.state = 'opening';
+@@ -342,9 +369,8 @@
+     FX.burst(r.left + r.width / 2, r.top + r.height / 2, { n: 80, min: 140, max: 480, g: 360, drag: .22, life: 1.1 });
+     startMusic();
+     if (reduce) { finish(); return; }
+-    setTimeout(enter, 1300);
+-    safety = setTimeout(finish, (C.reveal.durationMs || 2200) + 600);
+-    cover.addEventListener('transitionend', function end(e) { if (e.target !== cover || e.propertyName !== 'opacity') return; cover.removeEventListener('transitionend', end); finish(); });
++    cover.addEventListener('transitionend', onEnd);
++    fallbackOpen = setTimeout(beginReveal, Math.max(3000, C.reveal.durationMs || 0));   /* flap+card finish by ~1.8s */
+   }
+   trigger.addEventListener('click', open);
+ 
+diff -ru project-backup-20261029/style.css project/style.css
+--- project-backup-20261029/style.css	2026-10-29 10:25:07.154590677 +0000
++++ project/style.css	2026-10-29 10:29:48.660048412 +0000
+@@ -63,12 +63,12 @@
+ 
+ /* ============ COVER / ENVELOPE ============ */
+ .cover{position:fixed;inset:0;z-index:50;display:grid;place-content:center;justify-items:center;gap:2.2rem;padding:1rem;overflow:hidden;
+-background:radial-gradient(70% 55% at 50% 45%,var(--surface),var(--bg) 72%);transition:opacity .9s var(--ease) 1.4s}
++background:radial-gradient(70% 55% at 50% 45%,var(--surface),var(--bg) 72%);transition:opacity .9s cubic-bezier(.4,0,.2,1)}
+ .cover[hidden]{display:none}
+ .glow{position:absolute;left:50%;top:46%;width:min(120vw,46rem);aspect-ratio:1;translate:-50% -50%;border-radius:50%;pointer-events:none;
+ background:radial-gradient(closest-side,rgba(227,205,159,.55),transparent);animation:breathe 5s ease-in-out infinite}
+ .stage{position:relative;animation:float 6s ease-in-out infinite}
+-.envelope{position:relative;width:min(86vw,26rem);aspect-ratio:4/3;perspective:1100px;transition:transform 1.9s var(--ease-in) .5s}
++.envelope{position:relative;width:min(86vw,26rem);aspect-ratio:4/3;perspective:1100px;transition:transform 1.1s cubic-bezier(.4,0,.2,1)}
+ .back{position:absolute;inset:0;border-radius:6px;background:linear-gradient(180deg,var(--env-2),var(--env));
+ box-shadow:0 1px 0 rgba(255,255,255,.5) inset,0 26px 40px -14px rgba(60,40,30,.5),0 4px 10px rgba(60,40,30,.18)}
+ .card{position:absolute;inset:7% 6%;z-index:2;display:grid;place-content:center;text-align:center;overflow:hidden;background:var(--surface);
+@@ -87,14 +87,14 @@
+ .seal-btn svg{display:block}
+ .seal-btn::before,.seal-btn::after{content:"";position:absolute;inset:8px;border-radius:50%;border:1.5px solid var(--gold);opacity:0;pointer-events:none;animation:ripple 2.8s ease-out infinite}
+ .seal-btn::after{animation-delay:1.4s}
+-.hint{margin:0;font-size:.8rem;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);opacity:.6;animation:hintp 2.6s ease-in-out infinite;text-align:center}
+-.cover[data-state=opening] .seal-btn{animation:none;transform:scale(1.28);opacity:0}
+-.cover[data-state=opening] .seal-btn::before,.cover[data-state=opening] .seal-btn::after{animation:none}
+-.cover[data-state=opening] .flap{transform:rotateX(180deg);z-index:1}
+-.cover[data-state=opening] .card{transform:translateY(-40%)}
+-.cover[data-state=opening] .envelope{transform:scale(1.5)}
+-.cover[data-state=opening] .hint{opacity:0;animation:none;transition:opacity .4s}
+-.cover[data-state=opening]{opacity:0}
++.hint{margin:0;font-size:.8rem;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);opacity:.9;animation:hintp 2.6s ease-in-out infinite;text-align:center}
++.cover:not([data-state=sealed]) .seal-btn{animation:none;transform:scale(1.28);opacity:0}
++.cover:not([data-state=sealed]) .seal-btn::before,.cover:not([data-state=sealed]) .seal-btn::after{animation:none}
++.cover:not([data-state=sealed]) .flap{transform:rotateX(180deg);z-index:1}
++.cover:not([data-state=sealed]) .card{transform:translateY(-40%)}
++.cover[data-state=revealing] .envelope{transform:scale(1.35)}
++.cover:not([data-state=sealed]) .hint{opacity:0;animation:none;transition:opacity .4s}
++.cover[data-state=revealing]{opacity:0}
+ 
+ /* ============ SECTIONS ============ */
+ .sec{text-align:center;padding:clamp(3rem,10vw,5rem) 1.5rem}
